@@ -1,0 +1,31 @@
+version: "3.9"
+
+services:
+   app:
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    container_name: crypto_ml_production
+    build: .
+    restart: always
+    env_file:
+      - .env
+    depends_on:
+      - postgres
+    command: cron -f
+
+   postgres:
+    container_name: crypto_ml_production_db
+    image: postgres:15
+    restart: always
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+volumes:
+  pgdata:

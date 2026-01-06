@@ -1,0 +1,29 @@
+# tensorflow==2.15.*
+# xgboost
+# numpy
+# pandas
+# scikit-learn
+# joblib
+# psycopg2-binary
+# ccxt
+# python-dotenv
+# requests
+# tensorflow==2.15.1
+# xgboost
+# numpy
+# pandas
+# scikit-learn
+# psycopg2-binary
+# python-dotenv
+# requests
+# joblib
+# ccxt
+numpy
+pandas
+scikit-learn==1.4.2
+xgboost==2.0.3
+psycopg2-binary
+ccxt
+python-dotenv
+requests
+tensorflow==2.15.1
