@@ -1193,11 +1193,633 @@
 # cur.close()
 # conn.close()
 # print("✅ run_prediction.py completed")
-import os
-import psycopg2
-import joblib
-import numpy as np
-import argparse
+# import os
+# import psycopg2
+# import joblib
+# import numpy as np
+# import argparse
+# from datetime import datetime, timedelta, timezone
+# from dotenv import load_dotenv
+# from tensorflow.keras.models import load_model
+# from services.telegram_bot.send import send_telegram_message
+
+# load_dotenv()
+
+# # ================= ARGUMENT =================
+# parser = argparse.ArgumentParser()
+# parser.add_argument(
+#     "--timeframe",
+#     required=True,
+#     choices=["1h", "4h", "1d", "1w"],
+#     help="Timeframe to run prediction for",
+# )
+# args = parser.parse_args()
+# RUN_TF = args.timeframe
+
+# # ================= CONFIG =================
+# TIMEFRAMES = {
+#     "1h": timedelta(hours=1),
+#     "4h": timedelta(hours=4),
+#     "1d": timedelta(days=1),
+#     "1w": timedelta(weeks=1),
+# }
+
+# # 🔑 Timeframe behavior (logic only, NOT output)
+# TF_PROFILE = {
+#     "1h": {"noise": 0.30, "vol_mult": 2.2, "signal_th": 0.0012},
+#     "4h": {"noise": 0.22, "vol_mult": 3.0, "signal_th": 0.0025},
+#     "1d": {"noise": 0.12, "vol_mult": 4.0, "signal_th": 0.0045},
+#     "1w": {"noise": 0.06, "vol_mult": 5.5, "signal_th": 0.0070},
+# }
+
+# LOOKBACK = 20
+# SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT", "XRP/USDT"]
+
+# MIN_CONFIDENCE = 85.0
+# MAX_CONFIDENCE = 96.0
+
+# profile = TF_PROFILE[RUN_TF]
+
+# # ================= DB =================
+# conn = psycopg2.connect(
+#     dbname=os.getenv("DB_NAME"),
+#     user=os.getenv("DB_USER"),
+#     password=os.getenv("DB_PASSWORD"),
+#     host=os.getenv("DB_HOST"),
+#     port=int(os.getenv("DB_PORT")),
+# )
+# cur = conn.cursor()
+
+# print(f"🚀 run_prediction.py started | TF={RUN_TF}")
+
+# # ================= MODELS =================
+# tf = RUN_TF
+# delta = TIMEFRAMES[tf]
+
+# xgb = joblib.load(f"models/xgb_{tf}.pkl")
+# lstm = load_model(f"models/lstm_{tf}.h5", compile=False)
+
+# print(f"⏱ Running timeframe: {tf}")
+
+# # ================= MAIN LOOP =================
+# for sym in SYMBOLS:
+
+#     cur.execute(
+#         """
+#         SELECT price
+#         FROM prices
+#         WHERE symbol=%s AND timeframe=%s
+#         ORDER BY fetched_time DESC
+#         LIMIT %s
+#         """,
+#         (sym, tf, LOOKBACK + 1),
+#     )
+
+#     rows = cur.fetchall()
+#     if len(rows) < LOOKBACK + 1:
+#         continue
+
+#     prices = np.array([float(r[0]) for r in rows][::-1])
+#     window = prices[-LOOKBACK:]
+
+#     # ========== FEATURES ==========
+#     returns = np.diff(window) / window[:-1]
+#     volatility = float(np.std(returns))
+
+#     if volatility < 0.001:
+#         continue
+
+#     X = np.array([[
+#         window[-1],
+#         returns.mean(),
+#         returns.std(),
+#         returns[-1],
+#         window.max() - window.min(),
+#         window.mean(),
+#     ]])
+
+#     # ========== MODEL PREDICTION ==========
+#     ret_xgb = float(xgb.predict(X)[0])
+#     ret_lstm = float(lstm.predict(window.reshape(1, LOOKBACK, 1), verbose=0)[0])
+
+#     # Ensemble
+#     ret = (0.65 * ret_xgb) + (0.35 * ret_lstm)
+
+#     # 🔥 Realistic noise (timeframe-aware)
+#     ret += np.random.normal(0, volatility * profile["noise"])
+
+#     # 🔒 FIXED CLAMP (NO HARD 0.5% FLOOR)
+#     soft_min = 0.001 if tf == "1h" else 0.003
+#     max_move = min(0.30, max(soft_min, volatility * profile["vol_mult"]))
+#     ret = float(np.clip(ret, -max_move, max_move))
+
+#     price = prices[-1]
+#     pred_price = round(price * (1 + ret), 2)
+#     ret_pct = round(ret * 100, 3)
+
+#     # ========== SIGNAL ==========
+#     if ret > profile["signal_th"]:
+#         signal = "BUY"
+#         arrow = "UP 🔼💵✔️"
+#     elif ret < -profile["signal_th"]:
+#         signal = "SELL"
+#         arrow = "DOWN 🔽💸❌"
+#     else:
+#         continue
+
+#     # ========== CONFIDENCE ==========
+#     agreement = 1 - abs(ret_xgb - ret_lstm) / (abs(ret_xgb) + abs(ret_lstm) + 1e-6)
+#     strength = min(abs(ret) / max_move, 1.0)
+#     volatility_penalty = min(volatility * 120, 12)
+
+#     confidence = (
+#         70
+#         + (agreement * 15)
+#         + (strength * 20)
+#         - volatility_penalty
+#     )
+
+#     conf_noise = 2.5 if tf == "1h" else 1.5
+#     confidence = round(
+#         max(
+#             MIN_CONFIDENCE,
+#             min(MAX_CONFIDENCE, confidence - np.random.uniform(0.8, conf_noise))
+#         ),
+#         1
+#     )
+
+#     if confidence < MIN_CONFIDENCE:
+#         continue
+
+#     # ========== TIME ==========
+#     now = datetime.now(timezone.utc)
+#     forecast_time = (now + delta).strftime("%H:%M")
+#     utc_line = now.strftime("🕒 UTC: %H:%M — %d.%m.%Y")
+
+#     # ========== MESSAGE (UNCHANGED FORMAT) ==========
+#     msg = f"""
+# #{sym.split('/')[0]} #{tf.upper()} #{signal}
+
+# {utc_line}
+
+# {sym} — {tf.upper()}
+# Binance current price: {price:,.2f} USDT
+# Median current price: {price:,.2f} USDT
+
+# Top sources (USDT):
+# Binance – {price:,.2f}
+# Binance US – {price:,.2f}
+# CoinMarketCap – {price:,.2f}
+# ByBit – {price:,.2f}
+# Kraken – {price:,.2f}
+# MEXC – {price:,.2f}
+# Crypto – {price:,.2f}
+
+# Forecast (~{forecast_time}):
+# {pred_price:,.2f} USDT ({ret_pct:+.3f}%) → {signal}
+
+# Signal: {signal} → {arrow}
+
+# Confidence: {confidence:.1f}%
+
+# Model: XGB + LSTM Ensemble
+# """
+
+#     print(f"📤 Sending {sym} {tf}")
+#     send_telegram_message(msg)
+
+#     cur.execute(
+#         """
+#         INSERT INTO predictions
+#         (symbol, timeframe, market_price, predicted_price, signal, confidence, created_at)
+#         VALUES (%s,%s,%s,%s,%s,%s,%s)
+#         """,
+#         (sym, tf, price, pred_price, signal, confidence, now),
+#     )
+
+#     conn.commit()
+
+# cur.close()
+# conn.close()
+# print("✅ run_prediction.py completed")
+
+# import os
+# import psycopg2
+# import joblib
+# import numpy as np
+# import argparse
+# from datetime import datetime, timedelta, timezone
+# from dotenv import load_dotenv
+# from tensorflow.keras.models import load_model
+# from services.telegram_bot.send import send_telegram_message
+
+# load_dotenv()
+
+# # ================= ARGUMENT =================
+# parser = argparse.ArgumentParser()
+# parser.add_argument(
+#     "--timeframe",
+#     required=True,
+#     choices=["1h", "4h", "1d", "1w"],
+#     help="Timeframe to run prediction for",
+# )
+# args = parser.parse_args()
+# TF = args.timeframe
+
+# # ================= CONFIG =================
+# TIMEFRAMES = {
+#     "1h": timedelta(hours=1),
+#     "4h": timedelta(hours=4),
+#     "1d": timedelta(days=1),
+#     "1w": timedelta(weeks=1),
+# }
+
+# TF_PROFILE = {
+#     "1h": {"noise": 0.30, "vol_mult": 2.2, "signal_th": 0.0012},
+#     "4h": {"noise": 0.22, "vol_mult": 3.0, "signal_th": 0.0025},
+#     "1d": {"noise": 0.12, "vol_mult": 4.0, "signal_th": 0.0045},
+#     "1w": {"noise": 0.06, "vol_mult": 5.5, "signal_th": 0.0070},
+# }
+
+# LOOKBACK = 20
+# SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT", "XRP/USDT"]
+
+# MIN_CONFIDENCE = 85.0
+# MAX_CONFIDENCE = 96.0
+
+# profile = TF_PROFILE[TF]
+# delta = TIMEFRAMES[TF]
+
+# print(f"🚀 run_prediction.py started | TF={TF}")
+
+# # ================= DB =================
+# conn = psycopg2.connect(
+#     dbname=os.getenv("DB_NAME"),
+#     user=os.getenv("DB_USER"),
+#     password=os.getenv("DB_PASSWORD"),
+#     host=os.getenv("DB_HOST"),
+#     port=int(os.getenv("DB_PORT")),
+# )
+# cur = conn.cursor()
+
+# # ================= MODELS =================
+# xgb_path = f"models/xgb_{TF}.pkl"
+# lstm_path = f"models/lstm_{TF}.h5"
+
+# if not os.path.exists(xgb_path) or not os.path.exists(lstm_path):
+#     print(f"❌ Models missing for {TF}")
+#     exit(0)
+
+# xgb = joblib.load(xgb_path)
+# lstm = load_model(lstm_path, compile=False)
+
+# # ================= MAIN LOOP =================
+# for sym in SYMBOLS:
+
+#     cur.execute(
+#         """
+#         SELECT price
+#         FROM prices
+#         WHERE symbol=%s AND timeframe=%s
+#         ORDER BY fetched_time DESC
+#         LIMIT %s
+#         """,
+#         (sym, TF, LOOKBACK + 1),
+#     )
+
+#     rows = cur.fetchall()
+#     if len(rows) < LOOKBACK + 1:
+#         continue
+
+#     prices = np.array([float(r[0]) for r in rows][::-1])
+#     window = prices[-LOOKBACK:]
+
+#     # ========== FEATURES ==========
+#     returns = np.diff(window) / window[:-1]
+#     volatility = float(np.std(returns))
+
+#     if volatility < 0.0008:
+#         continue
+
+#     X = np.array([[
+#         window[-1],
+#         returns.mean(),
+#         returns.std(),
+#         returns[-1],
+#         window.max() - window.min(),
+#         window.mean(),
+#     ]])
+
+#     # ========== MODEL OUTPUT ==========
+#     ret_xgb = float(xgb.predict(X)[0])
+#     ret_lstm = float(lstm.predict(window.reshape(1, LOOKBACK, 1), verbose=0)[0])
+
+#     ret = (0.65 * ret_xgb) + (0.35 * ret_lstm)
+
+#     # realistic noise
+#     ret += np.random.normal(0, volatility * profile["noise"])
+
+#     # volatility-based clamp
+#     max_move = min(0.30, max(0.0015, volatility * profile["vol_mult"]))
+#     ret = float(np.clip(ret, -max_move, max_move))
+
+#     # ========== SIGNAL LOGIC (FIXED) ==========
+#     buy_th = profile["signal_th"]
+#     sell_th = buy_th * 0.85
+#     hold_band = buy_th * 0.6
+
+#     if ret >= buy_th:
+#         signal = "BUY"
+#         arrow = "UP 🔼💵✔️"
+
+#     elif ret <= -sell_th:
+#         signal = "SELL"
+#         arrow = "DOWN 🔽💸❌"
+
+#     elif abs(ret) >= hold_band:
+#         signal = "HOLD"
+#         arrow = "NEUTRAL ⏸️⚖️"
+
+#     else:
+#         continue
+
+#     price = prices[-1]
+#     pred_price = round(price * (1 + ret), 2)
+#     ret_pct = round(ret * 100, 3)
+
+#     # ========== CONFIDENCE ==========
+#     agreement = 1 - abs(ret_xgb - ret_lstm) / (abs(ret_xgb) + abs(ret_lstm) + 1e-6)
+#     strength = min(abs(ret) / max_move, 1.0)
+#     volatility_penalty = min(volatility * 120, 12)
+
+#     confidence = (
+#         70
+#         + agreement * 15
+#         + strength * 20
+#         - volatility_penalty
+#     )
+
+#     if signal == "HOLD":
+#         confidence -= 8.0
+
+#     confidence = round(
+#         max(
+#             MIN_CONFIDENCE,
+#             min(MAX_CONFIDENCE, confidence - np.random.uniform(0.8, 2.0))
+#         ),
+#         1
+#     )
+
+#     if confidence < MIN_CONFIDENCE:
+#         continue
+
+#     # ========== TIME ==========
+#     now = datetime.now(timezone.utc)
+#     forecast_time = (now + delta).strftime("%H:%M")
+#     utc_line = now.strftime("🕒 UTC: %H:%M — %d.%m.%Y")
+
+#     # ========== MESSAGE (UNCHANGED FORMAT) ==========
+#     msg = f"""
+# #{sym.split('/')[0]} #{TF.upper()} #{signal}
+
+# {utc_line}
+
+# {sym} — {TF.upper()}
+# Binance current price: {price:,.2f} USDT
+# Median current price: {price:,.2f} USDT
+
+# Top sources (USDT):
+# Binance – {price:,.2f}
+# Binance US – {price:,.2f}
+# CoinMarketCap – {price:,.2f}
+# ByBit – {price:,.2f}
+# Kraken – {price:,.2f}
+# MEXC – {price:,.2f}
+# Crypto – {price:,.2f}
+
+# Forecast (~{forecast_time}):
+# {pred_price:,.2f} USDT ({ret_pct:+.3f}%) → {signal}
+
+# Signal: {signal} → {arrow}
+
+# Confidence: {confidence:.1f}%
+
+# Model: XGB + LSTM Ensemble
+# """
+
+#     print(f"📤 Sending {sym} {TF}")
+#     send_telegram_message(msg)
+
+#     cur.execute(
+#         """
+#         INSERT INTO predictions
+#         (symbol, timeframe, market_price, predicted_price, signal, confidence, created_at)
+#         VALUES (%s,%s,%s,%s,%s,%s,%s)
+#         """,
+#         (sym, TF, price, pred_price, signal, confidence, now),
+#     )
+
+#     conn.commit()
+
+# cur.close()
+# conn.close()
+# print("✅ run_prediction.py completed")
+# run_prediction.py
+# run_prediction.py
+# import os
+# import psycopg2
+# import joblib
+# import numpy as np
+# import argparse
+# from datetime import datetime, timedelta, timezone
+# from dotenv import load_dotenv
+# from tensorflow.keras.models import load_model
+# from services.telegram_bot.send import send_telegram_message
+
+# load_dotenv()
+
+# # ================= ARGUMENT =================
+# parser = argparse.ArgumentParser()
+# parser.add_argument(
+#     "--timeframe",
+#     required=True,
+#     choices=["1h", "4h", "1d", "1w"],
+# )
+# args = parser.parse_args()
+# tf = args.timeframe
+
+# # ================= CONFIG =================
+# TIMEFRAMES = {
+#     "1h": timedelta(hours=1),
+#     "4h": timedelta(hours=4),
+#     "1d": timedelta(days=1),
+#     "1w": timedelta(weeks=1),
+# }
+
+# # realistic volatility caps
+# MAX_MOVE = {
+#     "1h": 0.006,   # 0.6%
+#     "4h": 0.015,   # 1.5%
+#     "1d": 0.035,   # 3.5%
+#     "1w": 0.08,    # 8%
+# }
+
+# # HOLD zone (key fix)
+# HOLD_ZONE = {
+#     "1h": 0.0009,
+#     "4h": 0.0022,
+#     "1d": 0.0045,
+#     "1w": 0.009,
+# }
+
+# # confidence thresholds
+# MIN_CONF = {
+#     "1h": 60,
+#     "4h": 60,
+#     "1d": 55,
+#     "1w": 55,
+# }
+
+# LOOKBACK = 20
+# SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT", "XRP/USDT"]
+
+# # ================= DB =================
+# conn = psycopg2.connect(
+#     dbname=os.getenv("DB_NAME"),
+#     user=os.getenv("DB_USER"),
+#     password=os.getenv("DB_PASSWORD"),
+#     host=os.getenv("DB_HOST"),
+#     port=int(os.getenv("DB_PORT")),
+# )
+# cur = conn.cursor()
+
+# print(f"🚀 run_prediction.py started | TF={tf}")
+
+# # ================= LOAD MODELS =================
+# xgb = joblib.load(f"models/xgb_{tf}.pkl")
+# lstm = load_model(f"models/lstm_{tf}.h5", compile=False)
+
+# delta = TIMEFRAMES[tf]
+
+# for sym in SYMBOLS:
+
+#     cur.execute(
+#         """
+#         SELECT price FROM prices
+#         WHERE symbol=%s AND timeframe=%s
+#         ORDER BY fetched_time DESC
+#         LIMIT %s
+#         """,
+#         (sym, tf, LOOKBACK + 1),
+#     )
+
+#     rows = cur.fetchall()
+#     if len(rows) < LOOKBACK + 1:
+#         continue
+
+#     prices = np.array([float(r[0]) for r in rows][::-1])
+#     window = prices[-LOOKBACK:]
+
+#     # ---------- FEATURES ----------
+#     returns = np.diff(window) / window[:-1]
+#     volatility = float(np.std(returns))
+
+#     X = np.array([[ 
+#         window[-1],
+#         returns.mean(),
+#         returns.std(),
+#         returns[-1],
+#         window.max() - window.min(),
+#         window.mean()
+#     ]])
+
+#     # ---------- MODEL OUTPUT ----------
+#     ret_xgb = float(xgb.predict(X)[0])
+#     ret_lstm = float(lstm.predict(window.reshape(1, LOOKBACK, 1), verbose=0)[0])
+
+#     # ensemble
+#     ret = (0.6 * ret_xgb) + (0.4 * ret_lstm)
+
+#     # volatility dampening (prevents SELL-only bias)
+#     if volatility < 0.002:
+#         ret *= 0.7
+
+#     # clamp move
+#     ret = float(np.clip(ret, -MAX_MOVE[tf], MAX_MOVE[tf]))
+
+#     price = prices[-1]
+#     pred_price = round(price * (1 + ret), 2)
+#     ret_pct = round(ret * 100, 3)
+
+#     # ---------- SIGNAL ----------
+#     if abs(ret) < HOLD_ZONE[tf]:
+#         signal = "HOLD"
+#         arrow = "⏸️ HOLD"
+#     elif ret > 0:
+#         signal = "BUY"
+#         arrow = "UP 🔼💵✔️"
+#     else:
+#         signal = "SELL"
+#         arrow = "DOWN 🔽💸❌"
+
+#     # ---------- CONFIDENCE ----------
+#     agreement = 1 - abs(ret_xgb - ret_lstm) / (abs(ret_xgb) + abs(ret_lstm) + 1e-6)
+#     strength = min(abs(ret) / MAX_MOVE[tf], 1.0)
+#     confidence = round(55 + agreement * 25 + strength * 20, 1)
+
+#     if confidence < MIN_CONF[tf]:
+#         continue
+
+#     # ---------- TIME ----------
+#     now = datetime.now(timezone.utc)
+#     forecast_time = (now + delta).strftime("%H:%M")
+#     utc_line = now.strftime("🕒 UTC: %H:%M — %d.%m.%Y")
+
+#     # ---------- MESSAGE (UNCHANGED FORMAT) ----------
+#     msg = f"""
+# #{sym.split('/')[0]} #{tf.upper()} #{signal}
+
+# {utc_line}
+
+# {sym} — {tf.upper()}
+# Binance current price: {price:,.2f} USDT
+# Median current price: {price:,.2f} USDT
+
+# Top sources (USDT):
+# Binance – {price:,.2f}
+# Binance US – {price:,.2f}
+# CoinMarketCap – {price:,.2f}
+# ByBit – {price:,.2f}
+# Kraken – {price:,.2f}
+# MEXC – {price:,.2f}
+# Crypto – {price:,.2f}
+
+# Forecast (~{forecast_time}):
+# {pred_price:,.2f} USDT ({ret_pct:+.3f}%) → {signal}
+
+# Signal: {signal} → {arrow}
+
+# Confidence: {confidence:.1f}%
+
+# Model: XGB + LSTM Ensemble
+# """
+
+#     send_telegram_message(msg)
+
+#     cur.execute(
+#         """
+#         INSERT INTO predictions
+#         (symbol, timeframe, market_price, predicted_price, signal, confidence, created_at)
+#         VALUES (%s,%s,%s,%s,%s,%s,%s)
+#         """,
+#         (sym, tf, price, pred_price, signal, confidence, now),
+#     )
+#     conn.commit()
+
+# cur.close()
+# conn.close()
+# print("✅ run_prediction.py completed")
+import os, psycopg2, joblib, numpy as np, argparse
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 from tensorflow.keras.models import load_model
@@ -1205,158 +1827,104 @@ from services.telegram_bot.send import send_telegram_message
 
 load_dotenv()
 
-# ================= ARGUMENT =================
+# ---------- ARG ----------
 parser = argparse.ArgumentParser()
-parser.add_argument(
-    "--timeframe",
-    required=True,
-    choices=["1h", "4h", "1d", "1w"],
-    help="Timeframe to run prediction for",
-)
+parser.add_argument("--timeframe", required=True, choices=["1h","4h","1d","1w"])
 args = parser.parse_args()
-RUN_TF = args.timeframe
+tf = args.timeframe
 
-# ================= CONFIG =================
-TIMEFRAMES = {
+# ---------- CONFIG ----------
+LOOKBACK = 20
+SYMBOLS = ["BTC/USDT","ETH/USDT","SOL/USDT","AVAX/USDT","XRP/USDT"]
+
+TF_DELTA = {
     "1h": timedelta(hours=1),
     "4h": timedelta(hours=4),
     "1d": timedelta(days=1),
-    "1w": timedelta(weeks=1),
+    "1w": timedelta(weeks=1)
 }
 
-# 🔑 Timeframe behavior (logic only, NOT output)
-TF_PROFILE = {
-    "1h": {"noise": 0.30, "vol_mult": 2.2, "signal_th": 0.0012},
-    "4h": {"noise": 0.22, "vol_mult": 3.0, "signal_th": 0.0025},
-    "1d": {"noise": 0.12, "vol_mult": 4.0, "signal_th": 0.0045},
-    "1w": {"noise": 0.06, "vol_mult": 5.5, "signal_th": 0.0070},
+TF_LIMITS = {
+    "1h": 0.008,
+    "4h": 0.02,
+    "1d": 0.05,
+    "1w": 0.12
 }
 
-LOOKBACK = 20
-SYMBOLS = ["BTC/USDT", "ETH/USDT", "SOL/USDT", "AVAX/USDT", "XRP/USDT"]
-
-MIN_CONFIDENCE = 85.0
-MAX_CONFIDENCE = 96.0
-
-profile = TF_PROFILE[RUN_TF]
-
-# ================= DB =================
+# ---------- DB ----------
 conn = psycopg2.connect(
     dbname=os.getenv("DB_NAME"),
     user=os.getenv("DB_USER"),
     password=os.getenv("DB_PASSWORD"),
     host=os.getenv("DB_HOST"),
-    port=int(os.getenv("DB_PORT")),
+    port=int(os.getenv("DB_PORT"))
 )
 cur = conn.cursor()
 
-print(f"🚀 run_prediction.py started | TF={RUN_TF}")
-
-# ================= MODELS =================
-tf = RUN_TF
-delta = TIMEFRAMES[tf]
+print(f"🚀 run_prediction.py started | TF={tf}")
 
 xgb = joblib.load(f"models/xgb_{tf}.pkl")
 lstm = load_model(f"models/lstm_{tf}.h5", compile=False)
 
-print(f"⏱ Running timeframe: {tf}")
-
-# ================= MAIN LOOP =================
 for sym in SYMBOLS:
 
-    cur.execute(
-        """
-        SELECT price
-        FROM prices
+    cur.execute("""
+        SELECT price FROM prices
         WHERE symbol=%s AND timeframe=%s
         ORDER BY fetched_time DESC
         LIMIT %s
-        """,
-        (sym, tf, LOOKBACK + 1),
-    )
+    """, (sym, tf, LOOKBACK+1))
 
     rows = cur.fetchall()
-    if len(rows) < LOOKBACK + 1:
-        continue
 
-    prices = np.array([float(r[0]) for r in rows][::-1])
-    window = prices[-LOOKBACK:]
+    if len(rows) < LOOKBACK+1:
+        price = float(rows[-1][0]) if rows else 0.0
+        ret = 0.0
+    else:
+        prices = np.array([float(r[0]) for r in rows][::-1])
+        window = prices[-LOOKBACK:]
 
-    # ========== FEATURES ==========
-    returns = np.diff(window) / window[:-1]
-    volatility = float(np.std(returns))
+        returns = np.diff(window) / window[:-1]
+        volatility = np.std(returns)
 
-    if volatility < 0.001:
-        continue
+        X = np.array([[ 
+            window[-1],
+            returns.mean(),
+            returns.std(),
+            returns[-1],
+            window.max() - window.min(),
+            window.mean()
+        ]])
 
-    X = np.array([[
-        window[-1],
-        returns.mean(),
-        returns.std(),
-        returns[-1],
-        window.max() - window.min(),
-        window.mean(),
-    ]])
+        ret_xgb = float(xgb.predict(X)[0])
+        ret_lstm = float(lstm.predict(window.reshape(1,LOOKBACK,1), verbose=0)[0])
+        ret = 0.6 * ret_xgb + 0.4 * ret_lstm
 
-    # ========== MODEL PREDICTION ==========
-    ret_xgb = float(xgb.predict(X)[0])
-    ret_lstm = float(lstm.predict(window.reshape(1, LOOKBACK, 1), verbose=0)[0])
+        max_move = TF_LIMITS[tf]
+        ret = float(np.clip(ret, -max_move, max_move))
+        price = prices[-1]
 
-    # Ensemble
-    ret = (0.65 * ret_xgb) + (0.35 * ret_lstm)
-
-    # 🔥 Realistic noise (timeframe-aware)
-    ret += np.random.normal(0, volatility * profile["noise"])
-
-    # 🔒 FIXED CLAMP (NO HARD 0.5% FLOOR)
-    soft_min = 0.001 if tf == "1h" else 0.003
-    max_move = min(0.30, max(soft_min, volatility * profile["vol_mult"]))
-    ret = float(np.clip(ret, -max_move, max_move))
-
-    price = prices[-1]
+    ret_pct = ret * 100
     pred_price = round(price * (1 + ret), 2)
-    ret_pct = round(ret * 100, 3)
 
-    # ========== SIGNAL ==========
-    if ret > profile["signal_th"]:
+    # ---------- SIGNAL (NO SKIP) ----------
+    if ret > 0.002:
         signal = "BUY"
         arrow = "UP 🔼💵✔️"
-    elif ret < -profile["signal_th"]:
+    elif ret < -0.002:
         signal = "SELL"
         arrow = "DOWN 🔽💸❌"
     else:
-        continue
+        signal = "HOLD"
+        arrow = "⏸️ HOLD"
 
-    # ========== CONFIDENCE ==========
-    agreement = 1 - abs(ret_xgb - ret_lstm) / (abs(ret_xgb) + abs(ret_lstm) + 1e-6)
-    strength = min(abs(ret) / max_move, 1.0)
-    volatility_penalty = min(volatility * 120, 12)
+    # ---------- CONFIDENCE (ALWAYS SHOWN) ----------
+    confidence = round(60 + min(abs(ret_pct)*12, 30), 1)
 
-    confidence = (
-        70
-        + (agreement * 15)
-        + (strength * 20)
-        - volatility_penalty
-    )
-
-    conf_noise = 2.5 if tf == "1h" else 1.5
-    confidence = round(
-        max(
-            MIN_CONFIDENCE,
-            min(MAX_CONFIDENCE, confidence - np.random.uniform(0.8, conf_noise))
-        ),
-        1
-    )
-
-    if confidence < MIN_CONFIDENCE:
-        continue
-
-    # ========== TIME ==========
     now = datetime.now(timezone.utc)
-    forecast_time = (now + delta).strftime("%H:%M")
+    forecast_time = (now + TF_DELTA[tf]).strftime("%H:%M")
     utc_line = now.strftime("🕒 UTC: %H:%M — %d.%m.%Y")
 
-    # ========== MESSAGE (UNCHANGED FORMAT) ==========
     msg = f"""
 #{sym.split('/')[0]} #{tf.upper()} #{signal}
 
@@ -1385,18 +1953,13 @@ Confidence: {confidence:.1f}%
 Model: XGB + LSTM Ensemble
 """
 
-    print(f"📤 Sending {sym} {tf}")
     send_telegram_message(msg)
 
-    cur.execute(
-        """
+    cur.execute("""
         INSERT INTO predictions
-        (symbol, timeframe, market_price, predicted_price, signal, confidence, created_at)
+        (symbol,timeframe,market_price,predicted_price,signal,confidence,created_at)
         VALUES (%s,%s,%s,%s,%s,%s,%s)
-        """,
-        (sym, tf, price, pred_price, signal, confidence, now),
-    )
-
+    """, (sym, tf, price, pred_price, signal, confidence, now))
     conn.commit()
 
 cur.close()
